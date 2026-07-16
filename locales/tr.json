@@ -1,0 +1,71 @@
+{
+  "app": {
+    "title": "Scanbridge — PDF › Erişilebilir HTML",
+    "name": "Scanbridge",
+    "subtitle": "PDF'ten HTML'e Dönüştürücü",
+    "footer": "WCAG 2.1 Uyumlu"
+  },
+  "status": {
+    "starting": "Başlatılıyor…",
+    "scanning_system": "Sistem taranıyor…",
+    "gpu_not_found": "Ekran kartı bulunamadı, CPU kullanılıyor.",
+    "pytorch_failed": "PyTorch yüklenemedi, CPU kullanılıyor.",
+    "gpu_found": "Ekran kartı bulundu, GPU kullanılıyor.",
+    "processing": "İşleniyor: {filename}",
+    "cancelled": "İptal edildi",
+    "conversion_complete": "Dönüştürme tamamlandı",
+    "error": "Hata: {message}",
+    "cancel_sentinel": "İptal edildi."
+  },
+  "buttons": {
+    "select_and_convert": "PDF Seç ve Dönüştür",
+    "cancel": "Vazgeç",
+    "settings": "⚙ Ayarlar"
+  },
+  "progress": {
+    "bar_label": "Dönüştürme ilerleme çubuğu",
+    "checking_libs": "Kütüphaneler kontrol ediliyor…",
+    "preparing_models": "Modeller hazırlanıyor…",
+    "opening_pdf": "PDF açılıyor…",
+    "phase1": "1. Aşama: Filigran ve tekrarlayan metin tespiti yapılıyor…",
+    "phase1_page": "1. Aşama: Sayfa {current}/{total} analiz ediliyor…",
+    "phase2": "2. Aşama: HTML içeriği derleniyor…",
+    "phase2_page": "2. Aşama: Sayfa {current}/{total} işleniyor…",
+    "formula_detected": "Sayfa {current}/{total}: Formül algılandı, Pix2Text çalıştırılıyor…",
+    "building_html": "HTML belgesi oluşturuluyor…",
+    "pandoc_compile": "Pandoc ile nihai çıktı derleniyor…",
+    "done": "Tamamlandı!"
+  },
+  "errors": {
+    "missing_libs": "Eksik kütüphaneler: {libs}. Lütfen şu komutu çalıştırın:\npip install {libs}",
+    "empty_pdf": "PDF dosyası boş — işlenecek sayfa bulunamadı.",
+    "cancelled": "İptal edildi."
+  },
+  "loading": {
+    "easyocr_gpu": "EasyOCR yükleniyor (GPU)…",
+    "easyocr_cpu": "EasyOCR yükleniyor (CPU)…",
+    "pix2text": "Pix2Text yükleniyor…"
+  },
+  "file_dialog": {
+    "title": "PDF Dosyası Seç",
+    "filter": "PDF Dosyaları (*.pdf)"
+  },
+  "health": {
+    "scanning": "Sistem donanım taraması başlatıldı.",
+    "result": "Tarama sonucu: {announcement}"
+  },
+  "settings_dialog": {
+    "title": "Ayarlar",
+    "language_label": "Arayüz Dili",
+    "language_tr": "Türkçe",
+    "language_en": "English",
+    "save_button": "Kaydet",
+    "cancel_button": "İptal",
+    "restart_notice": "Dil değişikliği hemen uygulandı."
+  },
+  "log": {
+    "ocr_started": "OCR İş parçacığı başlatıldı. Hedef: {path}",
+    "ocr_done": "OCR İşlemi başarıyla tamamlandı.",
+    "ocr_error": "OCR İşleminde hata: {error}"
+  }
+}

@@ -1,0 +1,10 @@
+PyQt6
+PyMuPDF
+beautifulsoup4
+pypandoc
+easyocr
+pix2text
+torch
+numpy
+pillow
+opencv-python

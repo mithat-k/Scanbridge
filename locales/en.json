@@ -1,0 +1,71 @@
+{
+  "app": {
+    "title": "Scanbridge — PDF › Accessible HTML",
+    "name": "Scanbridge",
+    "subtitle": "PDF to HTML Converter",
+    "footer": "WCAG 2.1 Compliant"
+  },
+  "status": {
+    "starting": "Starting…",
+    "scanning_system": "Scanning system…",
+    "gpu_not_found": "No GPU found, using CPU.",
+    "pytorch_failed": "PyTorch could not be loaded, using CPU.",
+    "gpu_found": "GPU found, using GPU.",
+    "processing": "Processing: {filename}",
+    "cancelled": "Cancelled",
+    "conversion_complete": "Conversion complete",
+    "error": "Error: {message}",
+    "cancel_sentinel": "İptal edildi."
+  },
+  "buttons": {
+    "select_and_convert": "Select PDF & Convert",
+    "cancel": "Cancel",
+    "settings": "⚙ Settings"
+  },
+  "progress": {
+    "bar_label": "Conversion progress bar",
+    "checking_libs": "Checking libraries…",
+    "preparing_models": "Preparing models…",
+    "opening_pdf": "Opening PDF…",
+    "phase1": "Phase 1: Detecting watermarks and repeated text…",
+    "phase1_page": "Phase 1: Analyzing page {current}/{total}…",
+    "phase2": "Phase 2: Compiling HTML content…",
+    "phase2_page": "Phase 2: Processing page {current}/{total}…",
+    "formula_detected": "Page {current}/{total}: Formula detected, running Pix2Text…",
+    "building_html": "Building HTML document…",
+    "pandoc_compile": "Compiling final output with Pandoc…",
+    "done": "Done!"
+  },
+  "errors": {
+    "missing_libs": "Missing libraries: {libs}. Please run:\npip install {libs}",
+    "empty_pdf": "PDF file is empty — no pages found to process.",
+    "cancelled": "İptal edildi."
+  },
+  "loading": {
+    "easyocr_gpu": "Loading EasyOCR (GPU)…",
+    "easyocr_cpu": "Loading EasyOCR (CPU)…",
+    "pix2text": "Loading Pix2Text…"
+  },
+  "file_dialog": {
+    "title": "Select PDF File",
+    "filter": "PDF Files (*.pdf)"
+  },
+  "health": {
+    "scanning": "System hardware scan started.",
+    "result": "Scan result: {announcement}"
+  },
+  "settings_dialog": {
+    "title": "Settings",
+    "language_label": "Interface Language",
+    "language_tr": "Türkçe",
+    "language_en": "English",
+    "save_button": "Save",
+    "cancel_button": "Cancel",
+    "restart_notice": "Language change applied immediately."
+  },
+  "log": {
+    "ocr_started": "OCR Worker started. Target: {path}",
+    "ocr_done": "OCR process completed successfully.",
+    "ocr_error": "OCR process error: {error}"
+  }
+}
