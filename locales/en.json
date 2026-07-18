@@ -60,6 +60,7 @@
     "language_tr": "Türkçe",
     "language_en": "English",
     "ocr_lang_label": "EasyOCR Recognition Languages",
+    "ocr_lang_none": "None",
     "ocr_lang_hint": "At least one language must be selected. More languages increase load time.",
     "ocr_lang_tr": "Turkish",
     "ocr_lang_en": "English",

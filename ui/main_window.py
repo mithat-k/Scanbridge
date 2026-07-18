@@ -411,7 +411,9 @@ class MainWindow(QWidget):
         super().showEvent(event)
         if self._first_show:
             self._first_show = False
-            QTimer.singleShot(0, self._set_initial_focus)
+            # 150ms delay gives Windows and the screen reader enough time
+            # to build the accessibility tree before we move focus.
+            QTimer.singleShot(150, self._set_initial_focus)
 
     def _set_initial_focus(self) -> None:
         """
@@ -506,8 +508,10 @@ class MainWindow(QWidget):
         self.hw_badge.style().polish(self.hw_badge)
         self.hw_badge.setVisible(True)
 
-        # Enable primary action
+        # Enable primary action and move focus to it so the screen reader
+        # announces that the app is ready to use.
         self.select_btn.setEnabled(True)
+        self.select_btn.setFocus(Qt.FocusReason.OtherFocusReason)
 
     # ------------------------------------------------------------------
     # Conversion flow

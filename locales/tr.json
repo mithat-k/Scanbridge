@@ -60,6 +60,7 @@
     "language_tr": "Türkçe",
     "language_en": "English",
     "ocr_lang_label": "EasyOCR Tanıma Dilleri",
+    "ocr_lang_none": "Hiçbiri",
     "ocr_lang_hint": "En az bir dil seçili olmalıdır. Fazla dil seçmek yükleme süresini uzatır.",
     "ocr_lang_tr": "Türkçe",
     "ocr_lang_en": "İngilizce",

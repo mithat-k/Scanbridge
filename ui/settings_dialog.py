@@ -17,7 +17,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
     QLabel, QComboBox, QPushButton, QFrame,
-    QListWidget, QListWidgetItem, QSizePolicy,
+    QSizePolicy,
 )
 
 from utils.i18n import translator
@@ -117,36 +117,44 @@ class SettingsDialog(QDialog):
         self._ocr_label.setObjectName("settingsLabel")
         root.addWidget(self._ocr_label)
 
-        # QListWidget with checkable items — acts as a multi-select combobox
-        self._ocr_list = QListWidget()
-        self._ocr_list.setObjectName("ocrLangList")
-        self._ocr_list.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self._ocr_list.setAccessibleName(translator.t("settings_dialog.ocr_lang_label"))
-        self._ocr_list.setSizePolicy(
-            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
-        )
-        # Show all items without a scrollbar (max 6 visible rows, rest scrollable)
-        self._ocr_list.setFixedHeight(min(len(_OCR_LANG_ITEMS), 6) * 32 + 4)
+        ocr_row = QHBoxLayout()
+        ocr_row.setSpacing(16)
 
-        currently_selected: list[str] = get_ocr_languages()
+        self._ocr_combo1 = QComboBox()
+        self._ocr_combo1.setObjectName("ocrCombo1")
+        self._ocr_combo1.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._ocr_combo1.setAccessibleName(translator.t("settings_dialog.ocr_lang_label") + " 1")
+
+        self._ocr_combo2 = QComboBox()
+        self._ocr_combo2.setObjectName("ocrCombo2")
+        self._ocr_combo2.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self._ocr_combo2.setAccessibleName(translator.t("settings_dialog.ocr_lang_label") + " 2")
+
+        # Add "None" option to the second combobox
+        self._ocr_combo2.addItem(translator.t("settings_dialog.ocr_lang_none"), "")
 
         for code, key in _OCR_LANG_ITEMS:
             label = translator.t(key)
-            item = QListWidgetItem(label)
-            item.setData(Qt.ItemDataRole.UserRole, code)
-            item.setFlags(
-                Qt.ItemFlag.ItemIsEnabled
-                | Qt.ItemFlag.ItemIsUserCheckable
-            )
-            check_state = (
-                Qt.CheckState.Checked
-                if code in currently_selected
-                else Qt.CheckState.Unchecked
-            )
-            item.setCheckState(check_state)
-            self._ocr_list.addItem(item)
+            self._ocr_combo1.addItem(label, code)
+            self._ocr_combo2.addItem(label, code)
 
-        root.addWidget(self._ocr_list)
+        currently_selected: list[str] = get_ocr_languages()
+
+        if currently_selected:
+            idx1 = self._ocr_combo1.findData(currently_selected[0])
+            if idx1 >= 0:
+                self._ocr_combo1.setCurrentIndex(idx1)
+
+            if len(currently_selected) > 1:
+                idx2 = self._ocr_combo2.findData(currently_selected[1])
+                if idx2 >= 0:
+                    self._ocr_combo2.setCurrentIndex(idx2)
+            else:
+                self._ocr_combo2.setCurrentIndex(0) # None
+
+        ocr_row.addWidget(self._ocr_combo1, stretch=1)
+        ocr_row.addWidget(self._ocr_combo2, stretch=1)
+        root.addLayout(ocr_row)
 
         # Hint text below the list
         self._ocr_hint = QLabel(translator.t("settings_dialog.ocr_lang_hint"))
@@ -212,8 +220,8 @@ class SettingsDialog(QDialog):
                 border-top: 1px solid {self._CLR_BORDER};
             }}
 
-            /* Interface language combobox */
-            QComboBox#langCombo {{
+            /* Interface & OCR language comboboxes */
+            QComboBox#langCombo, QComboBox#ocrCombo1, QComboBox#ocrCombo2 {{
                 background-color: {self._CLR_SURFACE};
                 color: {self._CLR_TEXT};
                 border: 1px solid {self._CLR_BORDER};
@@ -222,41 +230,16 @@ class SettingsDialog(QDialog):
                 font-size: 10pt;
                 min-height: 32px;
             }}
-            QComboBox#langCombo::drop-down {{
+            QComboBox#langCombo::drop-down, QComboBox#ocrCombo1::drop-down, QComboBox#ocrCombo2::drop-down {{
                 border: none;
             }}
-            QComboBox#langCombo QAbstractItemView {{
+            QComboBox#langCombo QAbstractItemView, QComboBox#ocrCombo1 QAbstractItemView, QComboBox#ocrCombo2 QAbstractItemView {{
                 background-color: {self._CLR_SURFACE};
                 color: {self._CLR_TEXT};
                 selection-background-color: {self._CLR_ACCENT};
             }}
-            QComboBox#langCombo:focus {{
+            QComboBox#langCombo:focus, QComboBox#ocrCombo1:focus, QComboBox#ocrCombo2:focus {{
                 outline: none;
-                border: 2px dashed #FFD700;
-            }}
-
-            /* OCR language list */
-            QListWidget#ocrLangList {{
-                background-color: {self._CLR_SURFACE};
-                color: {self._CLR_TEXT};
-                border: 1px solid {self._CLR_BORDER};
-                border-radius: 6px;
-                padding: 4px 2px;
-                font-size: 10pt;
-                outline: none;
-            }}
-            QListWidget#ocrLangList::item {{
-                padding: 5px 8px;
-                border-radius: 4px;
-            }}
-            QListWidget#ocrLangList::item:selected {{
-                background-color: transparent;
-                color: {self._CLR_TEXT};
-            }}
-            QListWidget#ocrLangList::item:hover {{
-                background-color: rgba(79, 142, 247, 0.12);
-            }}
-            QListWidget#ocrLangList:focus {{
                 border: 2px dashed #FFD700;
             }}
 
@@ -298,14 +281,14 @@ class SettingsDialog(QDialog):
     # ------------------------------------------------------------------
 
     def _get_checked_ocr_languages(self) -> list[str]:
-        """Return the EasyOCR codes for all checked items in the list."""
+        """Return the EasyOCR codes from the two comboboxes."""
         result: list[str] = []
-        for i in range(self._ocr_list.count()):
-            item = self._ocr_list.item(i)
-            if item and item.checkState() == Qt.CheckState.Checked:
-                code = item.data(Qt.ItemDataRole.UserRole)
-                if code:
-                    result.append(code)
+        code1 = self._ocr_combo1.currentData()
+        if code1:
+            result.append(code1)
+        code2 = self._ocr_combo2.currentData()
+        if code2 and code2 != code1:
+            result.append(code2)
         return result
 
     # ------------------------------------------------------------------

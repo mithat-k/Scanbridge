@@ -31,7 +31,6 @@ _SUPPORTED_LANGUAGES: list[str] = ["tr", "en"]
 _SUPPORTED_OCR_LANGUAGES: list[str] = [
     "tr", "en", "de", "fr", "es", "it", "pt", "ru", "ar", "zh_sim", "zh_tra", "ja", "ko",
 ]
-_DEFAULT_OCR_LANGUAGES: list[str] = ["tr", "en"]
 _DEFAULT_FALLBACK = "en"
 
 # ---------------------------------------------------------------------------
@@ -132,16 +131,17 @@ def get_ocr_languages() -> list[str]:
     """
     Return the list of EasyOCR language codes selected by the user.
 
-    Defaults to ['tr', 'en'] when no explicit choice has been saved,
-    which preserves the behaviour of previous versions.
+    Defaults to the active UI language when no explicit choice has been saved.
     """
     settings = _load_settings()
     saved = settings.get("ocr_languages")
     if isinstance(saved, list) and saved:
         # Validate: keep only known codes, preserve order
         valid = [c for c in saved if c in _SUPPORTED_OCR_LANGUAGES]
-        return valid if valid else list(_DEFAULT_OCR_LANGUAGES)
-    return list(_DEFAULT_OCR_LANGUAGES)
+        if valid:
+            return valid
+
+    return [get_language()]
 
 
 def set_ocr_languages(langs: list[str]) -> None:
