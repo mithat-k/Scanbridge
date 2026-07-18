@@ -28,6 +28,12 @@ def main() -> None:
 
     window = MainWindow(OCRWorker)
     window.show()
+    # Bring the window to the foreground and make it the active window so
+    # that keyboard focus and screen-reader focus are transferred correctly.
+    # raise_() moves the window to the top of the Z-order;
+    # activateWindow() asks the OS to give it input focus.
+    window.raise_()
+    window.activateWindow()
 
     sys.exit(app.exec())
 

@@ -24,6 +24,7 @@ from pathlib import Path
 from PyQt6.QtCore import QThread, pyqtSignal
 from logger import app_logger
 from utils.i18n import translator
+from utils.settings_manager import get_ocr_languages
 
 # ---------------------------------------------------------------------------
 # Module-level constants
@@ -267,6 +268,7 @@ class OCRWorker(QThread):
     _reader      = None
     _p2t         = None
     _reader_gpu  = None
+    _reader_langs: list[str] | None = None  # Cached language list for invalidation
     _p2t_device  = None
 
     def __init__(
@@ -448,23 +450,30 @@ class OCRWorker(QThread):
     # ------------------------------------------------------------------
 
     def _get_models(self):
-        """Load and cache EasyOCR and Pix2Text models. Re-initialises only on device change."""
+        """Load and cache EasyOCR and Pix2Text models. Re-initialises only on device or language change."""
         import easyocr
 
-        # EasyOCR — re-initialise if GPU preference changed
-        # RULES.MD rule 1: never pass `workers` to easyocr.Reader
+        # Read the user's current OCR language selection from settings.
+        # This is intentionally re-read on every conversion start so that
+        # changes made in the Settings dialog take effect immediately.
+        ocr_langs = get_ocr_languages()
+
+        # EasyOCR — re-initialise if GPU preference or language list changed.
+        # RULES.MD rule 1: never pass `workers` to easyocr.Reader.
         if (
             OCRWorker._reader is None
             or OCRWorker._reader_gpu != self.gpu_enabled
+            or OCRWorker._reader_langs != ocr_langs
         ):
             key = "loading.easyocr_gpu" if self.gpu_enabled else "loading.easyocr_cpu"
             self.progress.emit(10, translator.t(key))
             OCRWorker._reader = easyocr.Reader(
-                ["tr", "en"],
+                ocr_langs,
                 gpu=self.gpu_enabled,
                 quantize=(not self.gpu_enabled),  # INT8 quantisation on CPU
             )
             OCRWorker._reader_gpu = self.gpu_enabled
+            OCRWorker._reader_langs = list(ocr_langs)
 
         # Pix2Text — re-initialise if device changed
         if (

@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from engine.ocr_worker import OCRWorker
 
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer, QCoreApplication
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QProgressBar, QFileDialog,
@@ -48,12 +48,18 @@ def _announce(widget: QLabel, message: str, *, event_type=None) -> None:
 
     Uses QAccessibleEvent when QAccessible is available; otherwise
     falls back to setAccessibleName so the text is still exposed via AT-SPI.
+
+    Important: we intentionally do NOT gate on QAccessible.isActive().
+    During startup, NVDA/JAWS may not have activated Qt's accessibility
+    subsystem yet, so isActive() returns False and the Alert event would
+    never be emitted. Qt handles updateAccessibility() safely even when
+    no AT is active — it is a no-op in that case, not an error.
     """
     widget.setText(message)
     widget.setAccessibleName(message)
     widget.setToolTip(message)
 
-    if _HAS_QACCESSIBLE and QAccessible.isActive():
+    if _HAS_QACCESSIBLE:
         try:
             if event_type is None:
                 event_type = QAccessible.Event.NameChanged
@@ -98,6 +104,7 @@ class MainWindow(QWidget):
         self.gpu_enabled: bool = False
         self.device_type: str = "cpu"
         self._converting: bool = False  # Guard against double-conversion
+        self._first_show: bool = True   # Tracks the very first showEvent call
 
         self._build_ui()
         self._run_health_check()
@@ -375,6 +382,46 @@ class MainWindow(QWidget):
                 background-color: {self._CLR_SURFACE};
             }}
         """)
+
+    # ------------------------------------------------------------------
+    # Window show event — initial focus management
+    # ------------------------------------------------------------------
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """
+        Called once by Qt when the window becomes visible.
+
+        On the very first show we defer focus assignment by one event-loop
+        tick (QTimer.singleShot with 0 ms) so that:
+          1. The window is fully painted and has received its WM_ACTIVATE
+             message from Windows before we move focus.
+          2. NVDA / JAWS / Narrator have had a chance to enumerate the new
+             top-level window via WinEvent hooks before focus lands inside it.
+
+        Focus target priority:
+          • settings_btn  — always interactive, so it is a safe first-focus
+            target while the health check is still running and select_btn
+            is disabled.
+          • If the health check has already finished and select_btn is
+            enabled we prefer it because it is the primary action.
+
+        We only do this on the *first* show; subsequent show() calls (e.g.
+        after minimise/restore) must not steal focus unexpectedly (WCAG 3.2.1).
+        """
+        super().showEvent(event)
+        if self._first_show:
+            self._first_show = False
+            QTimer.singleShot(0, self._set_initial_focus)
+
+    def _set_initial_focus(self) -> None:
+        """
+        Move keyboard focus to the most appropriate widget after startup.
+
+        Called from showEvent via QTimer.singleShot so Qt's event loop has
+        completed one full cycle and the OS window is active.
+        """
+        target = self.select_btn if self.select_btn.isEnabled() else self._settings_btn
+        target.setFocus(Qt.FocusReason.OtherFocusReason)
 
     # ------------------------------------------------------------------
     # Live translation update

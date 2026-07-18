@@ -25,6 +25,13 @@ _LOGS_DIR = os.path.join(_PROJECT_ROOT, "logs")
 _SETTINGS_PATH = os.path.join(_LOGS_DIR, "settings.json")
 
 _SUPPORTED_LANGUAGES: list[str] = ["tr", "en"]
+
+# All language codes that EasyOCR supports and that the UI exposes.
+# The list is ordered: the first entry is used as the primary language.
+_SUPPORTED_OCR_LANGUAGES: list[str] = [
+    "tr", "en", "de", "fr", "es", "it", "pt", "ru", "ar", "zh_sim", "zh_tra", "ja", "ko",
+]
+_DEFAULT_OCR_LANGUAGES: list[str] = ["tr", "en"]
 _DEFAULT_FALLBACK = "en"
 
 # ---------------------------------------------------------------------------
@@ -119,6 +126,38 @@ def is_manual_set() -> bool:
     """Return True if the user has ever explicitly chosen a language."""
     settings = _load_settings()
     return bool(settings.get("manual_language_set", False))
+
+
+def get_ocr_languages() -> list[str]:
+    """
+    Return the list of EasyOCR language codes selected by the user.
+
+    Defaults to ['tr', 'en'] when no explicit choice has been saved,
+    which preserves the behaviour of previous versions.
+    """
+    settings = _load_settings()
+    saved = settings.get("ocr_languages")
+    if isinstance(saved, list) and saved:
+        # Validate: keep only known codes, preserve order
+        valid = [c for c in saved if c in _SUPPORTED_OCR_LANGUAGES]
+        return valid if valid else list(_DEFAULT_OCR_LANGUAGES)
+    return list(_DEFAULT_OCR_LANGUAGES)
+
+
+def set_ocr_languages(langs: list[str]) -> None:
+    """
+    Persist the user's EasyOCR language selection.
+
+    Args:
+        langs: Non-empty list of EasyOCR language codes.
+               Unknown codes are silently dropped.
+    """
+    valid = [c for c in langs if c in _SUPPORTED_OCR_LANGUAGES]
+    if not valid:
+        return  # Do not persist an empty selection
+    settings = _load_settings()
+    settings["ocr_languages"] = valid
+    _save_settings(settings)
 
 
 def get_settings_path() -> str:
