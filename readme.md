@@ -307,9 +307,9 @@ If you use Scanbridge in academic work, presentations, or research, please cite 
 ```bibtex
 @software{scanbridge,
   title={Scanbridge: Privacy-First Decentralized Semantic OCR for Accessible Documents},
-  author={Your Name},
+  author={mithat-k},
   year={2026},
   license={GPL-3.0},
-  url={https://github.com/<your-username>/Scanbridge}
+  url={https://github.com/mithat-k/Scanbridge}
 }
 ```
