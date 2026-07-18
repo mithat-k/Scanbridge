@@ -491,13 +491,20 @@ class OCRWorker(QThread):
         """
         Load Pix2Text with a three-level fallback strategy.
 
-        Level 1 — Force PyTorch backend (avoids missing ONNX file errors).
-        Level 2 — Disable fast mode for older Pix2Text versions.
+        Level 1 — Default (ONNX runtime) which is much faster and uses onnxruntime-gpu if installed.
+        Level 2 — Force PyTorch backend if ONNX models are missing or runtime crashes.
         Level 3 — Direct constructor as last resort.
         """
         from pix2text import Pix2Text
 
         try:
+            # Attempt 1: Default config (prefers ONNX)
+            return Pix2Text.from_config(device=device)
+        except Exception:
+            pass
+
+        try:
+            # Attempt 2: Fallback to PyTorch backend
             return Pix2Text.from_config(
                 total_configs={'formula': {'model_backend': 'pytorch'}},
                 device=device,
@@ -505,11 +512,7 @@ class OCRWorker(QThread):
         except Exception:
             pass
 
-        try:
-            return Pix2Text.from_config(device=device, use_fast=False)
-        except Exception:
-            pass
-
+        # Attempt 3: Legacy direct instantiation
         return Pix2Text(device=device)
 
     # ------------------------------------------------------------------
