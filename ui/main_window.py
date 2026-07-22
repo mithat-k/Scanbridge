@@ -548,12 +548,12 @@ class MainWindow(QWidget):
         if self.ocr_worker is not None:
             try:
                 self.ocr_worker.progress.disconnect()
-                self.ocr_worker.finished.disconnect()
+                self.ocr_worker.result_ready.disconnect()
                 self.ocr_worker.error.disconnect()
             except RuntimeError:
                 pass  # Already disconnected — safe to ignore
             if self.ocr_worker.isRunning():
-                self.ocr_worker.quit()
+                self.ocr_worker.cancel()
                 self.ocr_worker.wait(2000)
 
         self.ocr_worker = self.engine_worker_class(
@@ -562,7 +562,7 @@ class MainWindow(QWidget):
             device_type=self.device_type,
         )
         self.ocr_worker.progress.connect(self._on_progress)
-        self.ocr_worker.finished.connect(self._on_finished)
+        self.ocr_worker.result_ready.connect(self._on_finished)
         self.ocr_worker.error.connect(self._on_error)
         self.ocr_worker.start()
 
@@ -621,11 +621,11 @@ class MainWindow(QWidget):
         if self.ocr_worker is not None and self.ocr_worker.isRunning():
             try:
                 self.ocr_worker.progress.disconnect()
-                self.ocr_worker.finished.disconnect()
+                self.ocr_worker.result_ready.disconnect()
                 self.ocr_worker.error.disconnect()
             except RuntimeError:
                 pass
-            self.ocr_worker.quit()
+            self.ocr_worker.cancel()
             self.ocr_worker.wait(3000)
 
         # Health checker worker

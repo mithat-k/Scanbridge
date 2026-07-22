@@ -261,7 +261,7 @@ class OCRWorker(QThread):
     """
 
     progress = pyqtSignal(int, str)
-    finished = pyqtSignal(str)
+    result_ready = pyqtSignal(str)
     error    = pyqtSignal(str)
 
     # Class-level model cache (RULES.MD: models are kept alive for the session)
@@ -443,7 +443,7 @@ class OCRWorker(QThread):
             f.write(final_html)
 
         self.progress.emit(100, translator.t("progress.done"))
-        self.finished.emit(self.output_path)
+        self.result_ready.emit(self.output_path)
 
     # ------------------------------------------------------------------
     # Model loading (with session-level cache)
@@ -500,8 +500,8 @@ class OCRWorker(QThread):
         try:
             # Attempt 1: Default config (prefers ONNX)
             return Pix2Text.from_config(device=device)
-        except Exception:
-            pass
+        except Exception as exc:
+            app_logger.warning("Pix2Text ONNX yüklenemedi, PyTorch'a geçiliyor: %s", exc)
 
         try:
             # Attempt 2: Fallback to PyTorch backend
@@ -509,8 +509,8 @@ class OCRWorker(QThread):
                 total_configs={'formula': {'model_backend': 'pytorch'}},
                 device=device,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            app_logger.warning("Pix2Text PyTorch yüklenemedi, doğrudan başlatmaya geçiliyor: %s", exc)
 
         # Attempt 3: Legacy direct instantiation
         return Pix2Text(device=device)

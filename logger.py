@@ -82,6 +82,8 @@ class StreamToLogger:
     def __init__(self, logger: logging.Logger, log_level: int) -> None:
         self.logger    = logger
         self.log_level = log_level
+        self.encoding  = "utf-8"
+        self.errors    = "replace"
 
     def write(self, message: str) -> None:
         # Skip bare newlines to keep the log tidy
@@ -91,6 +93,9 @@ class StreamToLogger:
 
     def flush(self) -> None:
         pass  # Required by the file-like interface; nothing to flush
+
+    def isatty(self) -> bool:
+        return False
 
 
 # Redirect standard streams to the pipeline so the terminal stays silent
