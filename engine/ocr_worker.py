@@ -33,6 +33,9 @@ from utils.settings_manager import get_ocr_languages
 # Regex for detecting real LaTeX / formula symbols — avoids false positives.
 _MATH_RE = re.compile(r"[=\^_\\{}]|\$|\bfrac\b|\bsqrt\b|\bsum\b|\bint\b")
 
+# Normalized strings shorter than this are never considered watermarks.
+_MIN_WATERMARK_LEN = 4
+
 
 # ---------------------------------------------------------------------------
 # Dependency check
@@ -79,10 +82,9 @@ def _pixmap_to_pil(pix):
     if pix.colorspace and pix.colorspace.n != 3:
         pix = fitz.Pixmap(fitz.csRGB, pix)
 
-    # Strip alpha channel
+    # Strip alpha channel (colour-space conversion above keeps alpha intact)
     if pix.alpha:
-        pix_no_alpha = fitz.Pixmap(fitz.csRGB, pix, 0)  # 0 = drop alpha
-        pix = pix_no_alpha
+        pix = fitz.Pixmap(pix, 0)  # 0 = drop alpha
 
     raw = bytes(pix.samples)
     return Image.frombytes("RGB", (pix.width, pix.height), raw)
@@ -255,9 +257,9 @@ class OCRWorker(QThread):
 
     Signals
     -------
-    progress : (int, str)  – percentage [0–100] and a status message
-    finished : str         – absolute path to the output HTML file
-    error    : str         – error message
+    progress     : (int, str)  – percentage [0–100] and a status message
+    result_ready : str         – absolute path to the output HTML file
+    error        : str         – error message (status.cancel_sentinel on cancel)
     """
 
     progress = pyqtSignal(int, str)
@@ -295,20 +297,26 @@ class OCRWorker(QThread):
     def run(self) -> None:
         app_logger.info(translator.t("log.ocr_started", path=self.pdf_path))
         try:
-            self._process()
-            app_logger.info(translator.t("log.ocr_done"))
+            if self._process():
+                app_logger.info(translator.t("log.ocr_done"))
         except Exception as exc:
             app_logger.error(translator.t("log.ocr_error", error=str(exc)), exc_info=True)
             self.error.emit(str(exc))
 
-    def _process(self) -> None:
+    def _emit_cancelled(self) -> None:
+        # MainWindow._on_error ignores exactly this string — the UI was already
+        # reset by _on_cancel_clicked.
+        self.error.emit(translator.t("status.cancel_sentinel"))
+
+    def _process(self) -> bool:
+        """Run the conversion. Returns True only if the output file was written."""
         self.progress.emit(5, translator.t("progress.checking_libs"))
 
         missing = _check_dependencies()
         if missing:
             libs = ", ".join(missing)
             self.error.emit(translator.t("errors.missing_libs", libs=libs))
-            return
+            return False
 
         import fitz
         from bs4 import BeautifulSoup
@@ -325,7 +333,7 @@ class OCRWorker(QThread):
 
             if total == 0:
                 self.error.emit(translator.t("errors.empty_pdf"))
-                return
+                return False
 
             # ── Phase 1: Watermark and repeated-text detection ──
             self.progress.emit(12, translator.t("progress.phase1"))
@@ -334,8 +342,8 @@ class OCRWorker(QThread):
 
             for i, page in enumerate(doc):
                 if self._cancelled:
-                    self.error.emit(translator.t("errors.cancelled"))
-                    return
+                    self._emit_cancelled()
+                    return False
 
                 pct = int(12 + (i / total) * 33)
                 self.progress.emit(
@@ -365,7 +373,9 @@ class OCRWorker(QThread):
                 seen_on_page: set[str] = set()
                 for _, text, _ in results:
                     norm = _normalize_text(text)
-                    if norm:
+                    # Very short fragments ("ve", "a", "x") recur on most pages
+                    # as ordinary content — never treat them as watermarks.
+                    if len(norm) >= _MIN_WATERMARK_LEN:
                         seen_on_page.add(norm)
 
                 for norm in seen_on_page:
@@ -387,8 +397,8 @@ class OCRWorker(QThread):
 
             for i, page in enumerate(doc):
                 if self._cancelled:
-                    self.error.emit(translator.t("errors.cancelled"))
-                    return
+                    self._emit_cancelled()
+                    return False
 
                 pct = int(45 + (i / total) * 40)
                 self.progress.emit(
@@ -422,21 +432,19 @@ class OCRWorker(QThread):
         finally:
             doc.close()
 
-        self.progress.emit(85, translator.t("progress.building_html"))
-        html_content = soup.prettify()
+        # Pandoc MathML integration — only the formula paragraphs go through
+        # Pandoc. Converting the whole document strips the <head> (CSS +
+        # showPage script) and the nav buttons' onclick handlers, and Pandoc's
+        # HTML reader never parses $$...$$ text as math anyway.
+        self.progress.emit(85, translator.t("progress.pandoc_compile"))
+        self._convert_formulas_to_mathml(soup, pypandoc)
 
-        # Pandoc MathML integration
-        self.progress.emit(95, translator.t("progress.pandoc_compile"))
-        try:
-            final_html = pypandoc.convert_text(
-                html_content,
-                to="html",
-                format="html",
-                extra_args=["--mathml"],
-            )
-        except Exception:
-            # If Pandoc fails, preserve the original content
-            final_html = html_content
+        self.progress.emit(95, translator.t("progress.building_html"))
+        final_html = soup.prettify()
+
+        if self._cancelled:
+            self._emit_cancelled()
+            return False
 
         # Final disk write — only the output file (no intermediate disk I/O)
         with open(self.output_path, "w", encoding="utf-8") as f:
@@ -444,6 +452,33 @@ class OCRWorker(QThread):
 
         self.progress.emit(100, translator.t("progress.done"))
         self.result_ready.emit(self.output_path)
+        return True
+
+    @staticmethod
+    def _convert_formulas_to_mathml(soup, pypandoc) -> None:
+        """
+        Replace each `$$ ... $$` formula paragraph's text with Pandoc-generated
+        MathML. Paragraphs Pandoc cannot convert keep their `$$` source text.
+        """
+        from bs4 import BeautifulSoup
+
+        for p in soup.find_all("p", class_="math-formula"):
+            tex = p.get_text().strip()
+            try:
+                converted = pypandoc.convert_text(
+                    tex,
+                    to="html",
+                    format="markdown",
+                    extra_args=["--mathml"],
+                )
+            except Exception as exc:
+                app_logger.warning("Pandoc MathML conversion failed: %s", exc)
+                continue
+            math_el = BeautifulSoup(converted, "html.parser").find("math")
+            if math_el is None:
+                continue
+            p.clear()
+            p.append(math_el)
 
     # ------------------------------------------------------------------
     # Model loading (with session-level cache)
@@ -466,7 +501,7 @@ class OCRWorker(QThread):
             or OCRWorker._reader_langs != ocr_langs
         ):
             key = "loading.easyocr_gpu" if self.gpu_enabled else "loading.easyocr_cpu"
-            self.progress.emit(10, translator.t(key))
+            self.progress.emit(8, translator.t(key))
             OCRWorker._reader = easyocr.Reader(
                 ocr_langs,
                 gpu=self.gpu_enabled,
@@ -480,7 +515,7 @@ class OCRWorker(QThread):
             OCRWorker._p2t is None
             or OCRWorker._p2t_device != self.device_type
         ):
-            self.progress.emit(14, translator.t("loading.pix2text"))
+            self.progress.emit(9, translator.t("loading.pix2text"))
             OCRWorker._p2t = self._load_pix2text(self.device_type)
             OCRWorker._p2t_device = self.device_type
 

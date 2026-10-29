@@ -1,5 +1,5 @@
 """
-main.pyw
+
 
 Application entry point for Scanbridge.
 

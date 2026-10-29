@@ -1,0 +1,24 @@
+2026-10-29 18:15:43 | ERROR | scanbridge_app | Traceback (most recent call last):
+2026-10-29 18:15:43 | ERROR | scanbridge_app |   File "<string>", line 4, in <module>
+2026-10-29 18:15:43 | ERROR | scanbridge_app |     from engine.ocr_worker import _build_html_template
+2026-10-29 18:15:43 | ERROR | scanbridge_app |   File "C:\Users\Mithat\Desktop\projectforlearning\scanbridge\engine\ocr_worker.py", line 26, in <module>
+2026-10-29 18:15:43 | ERROR | scanbridge_app |     from utils.i18n import translator
+2026-10-29 18:15:43 | ERROR | scanbridge_app |   File "C:\Users\Mithat\Desktop\projectforlearning\scanbridge\utils\i18n.py", line 27, in <module>
+2026-10-29 18:15:43 | ERROR | scanbridge_app |     from PyQt6.QtCore import QObject, pyqtSignal
+2026-10-29 18:15:43 | ERROR | scanbridge_app | ImportError: cannot import name 'QObject' from 'PyQt6.QtCore' (unknown location)
+2026-10-29 18:15:51 | ERROR | scanbridge_app | Traceback (most recent call last):
+2026-10-29 18:15:51 | ERROR | scanbridge_app |   File "C:\Users\Mithat\AppData\Local\Temp\claude\C--Users-Mithat-Desktop-projectforlearning-scanbridge\36a890ca-20fd-4384-9a38-155acf38fa55\scratchpad\t.py", line 4, in <module>
+2026-10-29 18:15:51 | ERROR | scanbridge_app |     from engine.ocr_worker import _build_html_template
+2026-10-29 18:15:51 | ERROR | scanbridge_app |   File "C:\Users\Mithat\Desktop\projectforlearning\scanbridge\engine\ocr_worker.py", line 26, in <module>
+2026-10-29 18:15:51 | ERROR | scanbridge_app |     from utils.i18n import translator
+2026-10-29 18:15:51 | ERROR | scanbridge_app |   File "C:\Users\Mithat\Desktop\projectforlearning\scanbridge\utils\i18n.py", line 27, in <module>
+2026-10-29 18:15:51 | ERROR | scanbridge_app |     from PyQt6.QtCore import QObject, pyqtSignal
+2026-10-29 18:15:51 | ERROR | scanbridge_app | ImportError: cannot import name 'QObject' from 'PyQt6.QtCore' (unknown location)
+2026-10-29 18:15:56 | ERROR | scanbridge_app | Traceback (most recent call last):
+2026-10-29 18:15:56 | ERROR | scanbridge_app |   File "C:\Users\Mithat\AppData\Local\Temp\claude\C--Users-Mithat-Desktop-projectforlearning-scanbridge\36a890ca-20fd-4384-9a38-155acf38fa55\scratchpad\t.py", line 4, in <module>
+2026-10-29 18:15:56 | ERROR | scanbridge_app |     from engine.ocr_worker import _build_html_template
+2026-10-29 18:15:56 | ERROR | scanbridge_app |   File "C:\Users\Mithat\Desktop\projectforlearning\scanbridge\engine\ocr_worker.py", line 26, in <module>
+2026-10-29 18:15:56 | ERROR | scanbridge_app |     from utils.i18n import translator
+2026-10-29 18:15:56 | ERROR | scanbridge_app |   File "C:\Users\Mithat\Desktop\projectforlearning\scanbridge\utils\i18n.py", line 27, in <module>
+2026-10-29 18:15:56 | ERROR | scanbridge_app |     from PyQt6.QtCore import QObject, pyqtSignal
+2026-10-29 18:15:56 | ERROR | scanbridge_app | ImportError: cannot import name 'QObject' from 'PyQt6.QtCore' (unknown location)
