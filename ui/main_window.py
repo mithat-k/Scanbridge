@@ -35,6 +35,7 @@ except ImportError:
     _HAS_QACCESSIBLE = False
 
 from engine.health_checker import HealthCheckerWorker
+from logger import ui_logger
 from utils.i18n import translator
 
 
@@ -118,6 +119,10 @@ class MainWindow(QWidget):
         # can be re-rendered in the new language on a live language switch.
         self._status_key: str | None = "status.starting"
         self._status_kwargs: dict = {}
+        self._model_dialog = None  # ModelPrepDialog while models load/download
+        # Startup model preparation (runs right after the health check).
+        self._prep_worker = None
+        self._prep_stage: str = ""  # last stage message, shown when a download starts
 
         self._build_ui()
         self._run_health_check()
@@ -462,6 +467,9 @@ class MainWindow(QWidget):
 
         self.progress_bar.setAccessibleName(translator.t("progress.bar_label"))
 
+        if self._model_dialog is not None:
+            self._model_dialog.retranslate()
+
         # Re-render the status label from its stored translation key.
         # (The old code compared the label text against the *new* language's
         # strings, so it never matched and the label was never retranslated.)
@@ -537,12 +545,104 @@ class MainWindow(QWidget):
         self.hw_badge.style().polish(self.hw_badge)
         self.hw_badge.setVisible(True)
 
-        # Enable primary action and move focus to it so the screen reader
-        # announces that the app is ready to use — but don't steal focus while
-        # a modal dialog (e.g. Settings) is open on top of the main window.
+        # Load (and on first run download) the OCR models now, so the first
+        # conversion doesn't stall. select_btn is enabled once this ends.
+        self._start_model_prep()
+
+    def _can_select(self) -> bool:
+        """select_btn may be enabled: health check done, no worker thread running."""
+        return (
+            self._health_done
+            and not self._converting
+            and not (self._prep_worker is not None and self._prep_worker.isRunning())
+            and not (self.ocr_worker is not None and self.ocr_worker.isRunning())
+        )
+
+    def _enable_select(self) -> None:
+        """Enable the primary action and focus it so the screen reader announces it."""
+        if not self._can_select():
+            return
         self.select_btn.setEnabled(True)
+        # Don't steal focus while a modal dialog (e.g. Settings) is open.
         if self.isActiveWindow():
             self.select_btn.setFocus(Qt.FocusReason.OtherFocusReason)
+
+    # ------------------------------------------------------------------
+    # Startup model preparation
+    # ------------------------------------------------------------------
+
+    def _start_model_prep(self) -> None:
+        from engine.ocr_worker import ModelPrepWorker
+
+        self._set_status("status.models_preparing")
+        self._prep_stage = ""
+        worker = ModelPrepWorker(gpu_enabled=self.gpu_enabled, device_type=self.device_type)
+        worker.models_loading.connect(self._on_prep_stage)
+        worker.download_progress.connect(self._on_prep_download)
+        worker.models_ready.connect(self._close_model_dialog)
+        worker.prepared.connect(self._on_prep_done)
+        worker.error.connect(self._on_prep_error)
+        worker.finished.connect(self._on_prep_thread_finished)
+        self._prep_worker = worker
+        worker.start()
+
+    def _disconnect_prep_worker(self) -> None:
+        worker = self._prep_worker
+        if worker is None:
+            return
+        for signal in (
+            worker.models_loading, worker.download_progress, worker.models_ready,
+            worker.prepared, worker.error,
+        ):
+            try:
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+
+    def _on_prep_stage(self, message: str) -> None:
+        """A model started loading. Only a running download opens the dialog."""
+        self._prep_stage = message
+        self._status_key = None
+        self._status_kwargs = {}
+        _announce(self.status_label, message)
+        if self._model_dialog is not None:
+            self._model_dialog.set_stage(message)
+
+    def _on_prep_download(self, label: str, done: int, total: int) -> None:
+        """Weights are being downloaded: show the progress dialog."""
+        if self._model_dialog is None:
+            self._show_model_dialog(self._prep_stage, self._on_prep_cancel)
+        self._model_dialog.set_download(label, done, total)
+
+    def _on_prep_cancel(self) -> None:
+        """Cancel pressed in the dialog during startup preparation."""
+        if self._prep_worker is None:
+            return
+        self._disconnect_prep_worker()
+        self._prep_worker.cancel()
+        self._close_model_dialog()
+        self._set_status("status.models_prep_cancelled")
+        # select_btn is re-enabled by _on_prep_thread_finished.
+
+    def _on_prep_done(self) -> None:
+        self._close_model_dialog()
+        self._set_status("status.models_ready")
+
+    def _on_prep_error(self, message: str) -> None:
+        self._close_model_dialog()
+        if message == translator.t("status.cancel_sentinel"):
+            self._set_status("status.models_prep_cancelled")
+        else:
+            # Not fatal: the conversion loads the models again and reports
+            # a lasting problem through its own error path.
+            self._set_status("status.models_prep_failed", message=message)
+
+    def _on_prep_thread_finished(self) -> None:
+        worker = self._prep_worker
+        self._prep_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self._enable_select()
 
     # ------------------------------------------------------------------
     # Conversion flow
@@ -566,6 +666,9 @@ class MainWindow(QWidget):
         # page. Running a second worker in parallel would share the cached
         # class-level models across threads, so refuse until it has stopped.
         if self.ocr_worker is not None and self.ocr_worker.isRunning():
+            return
+        # The startup model preparation shares the same class-level cache.
+        if self._prep_worker is not None and self._prep_worker.isRunning():
             return
 
         self._converting = True
@@ -591,6 +694,9 @@ class MainWindow(QWidget):
         self.ocr_worker.progress.connect(self._on_progress)
         self.ocr_worker.result_ready.connect(self._on_finished)
         self.ocr_worker.error.connect(self._on_error)
+        self.ocr_worker.models_loading.connect(self._on_models_loading)
+        self.ocr_worker.download_progress.connect(self._on_download_progress)
+        self.ocr_worker.models_ready.connect(self._close_model_dialog)
         # QThread's built-in lifecycle signal: re-enable the primary button
         # only once the thread has really stopped (matters after a cancel).
         self.ocr_worker.finished.connect(self._on_worker_thread_finished)
@@ -599,15 +705,57 @@ class MainWindow(QWidget):
     @staticmethod
     def _disconnect_worker(worker) -> None:
         """Detach all UI slots from *worker* so late signals cannot touch the UI."""
-        for signal in (worker.progress, worker.result_ready, worker.error):
+        for signal in (
+            worker.progress, worker.result_ready, worker.error,
+            worker.models_loading, worker.download_progress, worker.models_ready,
+        ):
             try:
                 signal.disconnect()
             except (RuntimeError, TypeError):
                 pass  # Already disconnected — safe to ignore
 
+    # ------------------------------------------------------------------
+    # Model preparation dialog
+    # ------------------------------------------------------------------
+
+    def _show_model_dialog(self, stage: str, on_cancel) -> None:
+        """Create (if needed) and show the model dialog; *on_cancel* handles its Cancel."""
+        if self._model_dialog is None:
+            from ui.model_dialog import ModelPrepDialog
+            self._model_dialog = ModelPrepDialog(self)
+            self._model_dialog.cancel_requested.connect(on_cancel)
+        self._model_dialog.set_stage(stage or translator.t("progress.preparing_models"))
+        if not self._model_dialog.isVisible():
+            ui_logger.debug("Model preparation dialog shown")
+            self._model_dialog.show()
+            self._model_dialog.raise_()
+            self._model_dialog.activateWindow()
+
+    def _on_models_loading(self, message: str) -> None:
+        if not self._converting:
+            return
+        self._show_model_dialog(message, self._on_cancel_clicked)
+
+    def _on_download_progress(self, label: str, done: int, total: int) -> None:
+        if self._converting and self._model_dialog is not None:
+            self._model_dialog.set_download(label, done, total)
+
+    def _close_model_dialog(self) -> None:
+        dlg = self._model_dialog
+        if dlg is None:
+            return
+        self._model_dialog = None
+        try:
+            dlg.cancel_requested.disconnect()
+        except (RuntimeError, TypeError):
+            pass
+        dlg.finish()
+        dlg.deleteLater()
+        ui_logger.debug("Model preparation dialog closed")
+
     def _on_worker_thread_finished(self) -> None:
         """The OCR thread has fully stopped; allow a new conversion if idle."""
-        if not self._converting and self._health_done:
+        if self._can_select():
             self.select_btn.setEnabled(True)
 
     def _on_progress(self, value: int, message: str) -> None:
@@ -638,14 +786,14 @@ class MainWindow(QWidget):
     def _reset_ui_after_conversion(self) -> None:
         """Restore the UI to its idle state after conversion ends or is cancelled."""
         self._converting = False
+        self._close_model_dialog()
         # If the cancel button had focus, move focus somewhere sensible before
         # hiding it, otherwise keyboard / screen-reader focus is lost.
         cancel_had_focus = self.cancel_btn.hasFocus()
-        # Keep select_btn disabled while the worker thread is still running
+        # Keep select_btn disabled while a worker thread is still running
         # (e.g. finishing its current page after a cancel); it is re-enabled
         # by _on_worker_thread_finished in that case.
-        worker_running = self.ocr_worker is not None and self.ocr_worker.isRunning()
-        self.select_btn.setEnabled(self._health_done and not worker_running)
+        self.select_btn.setEnabled(self._can_select())
         self.cancel_btn.setVisible(False)
         if cancel_had_focus:
             target = self.select_btn if self.select_btn.isEnabled() else self._settings_btn
@@ -682,6 +830,7 @@ class MainWindow(QWidget):
 
         # Hide right away so the user doesn't see a frozen window while the
         # background threads wind down.
+        self._close_model_dialog()
         self.hide()
 
         # OCR worker — the cancel flag is only checked between pages, so a
@@ -696,6 +845,18 @@ class MainWindow(QWidget):
                 pass
             self.ocr_worker.cancel()
             self.ocr_worker.wait()
+
+        # Startup model preparation — cancel() aborts a running download;
+        # a model already loading from disk finishes before the thread ends.
+        prep = self._prep_worker
+        if prep is not None and prep.isRunning():
+            self._disconnect_prep_worker()
+            try:
+                prep.finished.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            prep.cancel()
+            prep.wait()
 
         # Health checker worker — run() has no event loop, so quit() is a
         # no-op; just wait for the (bounded) hardware probe to complete.

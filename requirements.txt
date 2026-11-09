@@ -8,3 +8,8 @@ torch
 numpy
 pillow
 opencv-python
+loguru
+onnx
+onnxruntime
+# cnstd 1.2.8 imports rapidocr.utils.model_resolver.resolve_model_key, renamed in 3.10
+rapidocr>=3.9.1,<3.10

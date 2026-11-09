@@ -15,7 +15,11 @@
     "cancelled": "İptal edildi",
     "conversion_complete": "Dönüştürme tamamlandı",
     "error": "Hata: {message}",
-    "cancel_sentinel": "İptal edildi."
+    "cancel_sentinel": "İptal edildi.",
+    "models_preparing": "OCR modelleri hazırlanıyor…",
+    "models_ready": "Hazır. Modeller yüklendi, dönüştürmek için bir PDF seçin.",
+    "models_prep_cancelled": "Model indirme iptal edildi. Modeller ilk dönüştürmede indirilecek.",
+    "models_prep_failed": "Modeller hazırlanamadı: {message}. İlk dönüştürmede yeniden denenecek."
   },
   "buttons": {
     "select_and_convert": "PDF Seç ve Dönüştür",
@@ -84,5 +88,16 @@
     "ocr_started": "OCR İş parçacığı başlatıldı. Hedef: {path}",
     "ocr_done": "OCR İşlemi başarıyla tamamlandı.",
     "ocr_error": "OCR İşleminde hata: {error}"
+  },
+  "model_dialog": {
+    "title": "Modeller hazırlanıyor",
+    "heading": "OCR modelleri hazırlanıyor",
+    "hint": "İlk kullanımda modeller bir kez indirilip önbelleğe alınır; sonraki dönüştürmeler hemen başlar.",
+    "bar_label": "Model hazırlama ilerlemesi",
+    "downloading": "{stage} — model dosyaları indiriliyor…",
+    "download_known": "{file}: {done} / {total} MB (%{percent})",
+    "download_unknown": "{file}: {done} MB indirildi",
+    "unnamed_file": "Model dosyası",
+    "cancelling": "İptal ediliyor…"
   }
 }

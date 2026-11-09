@@ -19,9 +19,11 @@ from __future__ import annotations
 import os
 import re
 import tempfile
+from functools import lru_cache
 from pathlib import Path
 
 from PyQt6.QtCore import QThread, pyqtSignal
+from engine.model_progress import DownloadCancelled, capture_downloads
 from logger import app_logger
 from utils.i18n import translator
 from utils.settings_manager import get_ocr_languages
@@ -49,6 +51,9 @@ def _check_dependencies() -> list[str]:
         ("bs4", "beautifulsoup4"),
         ("pypandoc", "pypandoc"),
         ("easyocr", "easyocr"),
+        # Pix2Text 1.1 imports optimum.onnxruntime at module level and CnOCR
+        # runs its text models on ONNX Runtime, so it is a hard requirement.
+        ("onnxruntime", "onnxruntime"),
         ("pix2text", "pix2text"),
         ("numpy", "numpy"),
         ("PIL", "pillow"),
@@ -60,6 +65,105 @@ def _check_dependencies() -> list[str]:
         except (ImportError, OSError):
             missing.append(pip_name)
     return missing
+
+
+# ---------------------------------------------------------------------------
+# ONNX Runtime detection
+# ---------------------------------------------------------------------------
+
+@lru_cache(maxsize=1)
+def detect_onnxruntime() -> dict:
+    """
+    Look for ONNX Runtime and report what it can run on.
+
+    Returns a dict:
+        available (bool)        – onnxruntime imports cleanly
+        version   (str | None)
+        providers (list[str])   – ort.get_available_providers()
+        cuda      (bool)        – CUDAExecutionProvider present (onnxruntime-gpu)
+        directml  (bool)        – DmlExecutionProvider present (onnxruntime-directml)
+
+    Cached for the session; safe to call from any thread. Kept module-level so
+    the health checker can reuse it.
+    """
+    info: dict = {
+        "available": False,
+        "version": None,
+        "providers": [],
+        "cuda": False,
+        "directml": False,
+    }
+    try:
+        import onnxruntime as ort
+    except (ImportError, OSError) as exc:
+        app_logger.warning("ONNX Runtime not available: {}", exc)
+        return info
+
+    providers = list(ort.get_available_providers())
+    info.update(
+        available=True,
+        version=getattr(ort, "__version__", None),
+        providers=providers,
+        cuda="CUDAExecutionProvider" in providers,
+        directml="DmlExecutionProvider" in providers,
+    )
+    app_logger.info(
+        "ONNX Runtime {} found, providers: {}", info["version"], ", ".join(providers) or "-"
+    )
+    return info
+
+
+def _pix2text_attempts(device: str) -> list[tuple[str, dict]]:
+    """
+    Ordered (description, total_configs) attempts for Pix2Text.from_config,
+    chosen from the ONNX Runtime capabilities.
+
+    Every sub-model of TextFormulaOCR is configured explicitly (keys live under
+    total_configs["text_formula"]; top-level keys are silently ignored):
+        text    – CnOCR detector + recognizer (det/rec_model_backend)
+        mfd     – formula detector (YOLO). "mfd-1.5" exists only as ONNX; the
+                  PyTorch fallback uses the older "mfd" model.
+        formula – formula recognizer (MFR). An explicit ORT provider is passed
+                  so ONNX never picks an unusable one.
+    The layout model (DocLayout-YOLO) is PyTorch-only in Pix2Text 1.1.
+    """
+    ort = detect_onnxruntime()
+    pytorch = (
+        "pytorch",
+        {"text_formula": {
+            "text": {"det_model_backend": "pytorch", "rec_model_backend": "pytorch"},
+            "mfd": {"model_name": "mfd", "model_backend": "pytorch"},
+            "formula": {"model_backend": "pytorch"},
+        }},
+    )
+
+    if not ort["available"]:
+        return [pytorch]
+
+    def onnx(provider: str) -> tuple[str, dict]:
+        return (
+            f"onnx/{provider}",
+            {"text_formula": {
+                "text": {"det_model_backend": "onnx", "rec_model_backend": "onnx"},
+                "mfd": {"model_name": "mfd-1.5", "model_backend": "onnx"},
+                "formula": {
+                    "model_backend": "onnx",
+                    "more_model_configs": {"provider": provider},
+                },
+            }},
+        )
+
+    if device == "cuda":
+        if ort["cuda"]:
+            return [onnx("CUDAExecutionProvider"), pytorch, onnx("CPUExecutionProvider")]
+        # The CPU build of onnxruntime cannot use the GPU — PyTorch can.
+        app_logger.info(
+            "ONNX Runtime has no CUDAExecutionProvider (install onnxruntime-gpu for "
+            "GPU ONNX inference); preferring the PyTorch backend on CUDA."
+        )
+        return [pytorch, onnx("CPUExecutionProvider")]
+
+    return [onnx("CPUExecutionProvider"), pytorch]
 
 
 # ---------------------------------------------------------------------------
@@ -260,11 +364,19 @@ class OCRWorker(QThread):
     progress     : (int, str)  – percentage [0–100] and a status message
     result_ready : str         – absolute path to the output HTML file
     error        : str         – error message (status.cancel_sentinel on cancel)
+    models_loading    : str    – a model is being loaded / downloaded (not cached);
+                                 emitted once per model with a status message
+    download_progress : (str, int, int) – file label, bytes done, bytes total (0 = unknown)
+    models_ready      : —      – model preparation ended (always follows models_loading)
     """
 
     progress = pyqtSignal(int, str)
     result_ready = pyqtSignal(str)
     error    = pyqtSignal(str)
+    models_loading    = pyqtSignal(str)
+    # `object` instead of int: Qt's int is 32-bit and model files can exceed 2 GiB.
+    download_progress = pyqtSignal(str, object, object)
+    models_ready      = pyqtSignal()
 
     # Class-level model cache (RULES.MD: models are kept alive for the session)
     _reader      = None
@@ -299,8 +411,11 @@ class OCRWorker(QThread):
         try:
             if self._process():
                 app_logger.info(translator.t("log.ocr_done"))
+        except DownloadCancelled:
+            app_logger.info("Model download cancelled by the user")
+            self._emit_cancelled()
         except Exception as exc:
-            app_logger.error(translator.t("log.ocr_error", error=str(exc)), exc_info=True)
+            app_logger.opt(exception=True).error(translator.t("log.ocr_error", error=str(exc)))
             self.error.emit(str(exc))
 
     def _emit_cancelled(self) -> None:
@@ -324,6 +439,9 @@ class OCRWorker(QThread):
 
         self.progress.emit(8, translator.t("progress.preparing_models"))
         reader, p2t = self._get_models()
+        if self._cancelled:
+            self._emit_cancelled()
+            return False
 
         self.progress.emit(10, translator.t("progress.opening_pdf"))
 
@@ -472,7 +590,7 @@ class OCRWorker(QThread):
                     extra_args=["--mathml"],
                 )
             except Exception as exc:
-                app_logger.warning("Pandoc MathML conversion failed: %s", exc)
+                app_logger.warning("Pandoc MathML conversion failed: {}", exc)
                 continue
             math_el = BeautifulSoup(converted, "html.parser").find("math")
             if math_el is None:
@@ -485,7 +603,14 @@ class OCRWorker(QThread):
     # ------------------------------------------------------------------
 
     def _get_models(self):
-        """Load and cache EasyOCR and Pix2Text models. Re-initialises only on device or language change."""
+        """
+        Load and cache EasyOCR and Pix2Text models. Re-initialises only on
+        device or language change.
+
+        When a model is not cached, `models_loading` is emitted (the UI shows
+        the model preparation dialog) and weight downloads are reported via
+        `download_progress`. Cancelling aborts a running download.
+        """
         import easyocr
 
         # Read the user's current OCR language selection from settings.
@@ -493,61 +618,75 @@ class OCRWorker(QThread):
         # changes made in the Settings dialog take effect immediately.
         ocr_langs = get_ocr_languages()
 
-        # EasyOCR — re-initialise if GPU preference or language list changed.
-        # RULES.MD rule 1: never pass `workers` to easyocr.Reader.
-        if (
+        need_reader = (
             OCRWorker._reader is None
             or OCRWorker._reader_gpu != self.gpu_enabled
             or OCRWorker._reader_langs != ocr_langs
-        ):
-            key = "loading.easyocr_gpu" if self.gpu_enabled else "loading.easyocr_cpu"
-            self.progress.emit(8, translator.t(key))
-            OCRWorker._reader = easyocr.Reader(
-                ocr_langs,
-                gpu=self.gpu_enabled,
-                quantize=(not self.gpu_enabled),  # INT8 quantisation on CPU
-            )
-            OCRWorker._reader_gpu = self.gpu_enabled
-            OCRWorker._reader_langs = list(ocr_langs)
+        )
+        need_p2t = OCRWorker._p2t is None or OCRWorker._p2t_device != self.device_type
 
-        # Pix2Text — re-initialise if device changed
-        if (
-            OCRWorker._p2t is None
-            or OCRWorker._p2t_device != self.device_type
-        ):
-            self.progress.emit(9, translator.t("loading.pix2text"))
-            OCRWorker._p2t = self._load_pix2text(self.device_type)
-            OCRWorker._p2t_device = self.device_type
+        if not (need_reader or need_p2t):
+            return OCRWorker._reader, OCRWorker._p2t
+
+        def on_download(label: str, done: int, total: int) -> None:
+            self.download_progress.emit(label, done, total)
+
+        try:
+            with capture_downloads(on_download, lambda: self._cancelled):
+                # EasyOCR — RULES.MD rule 1: never pass `workers` to easyocr.Reader.
+                if need_reader:
+                    key = "loading.easyocr_gpu" if self.gpu_enabled else "loading.easyocr_cpu"
+                    self._announce_model_stage(8, translator.t(key))
+                    app_logger.info(
+                        "Loading EasyOCR (langs={}, gpu={})", ocr_langs, self.gpu_enabled
+                    )
+                    OCRWorker._reader = easyocr.Reader(
+                        ocr_langs,
+                        gpu=self.gpu_enabled,
+                        quantize=(not self.gpu_enabled),  # INT8 quantisation on CPU
+                        verbose=False,  # download progress is captured by model_progress
+                    )
+                    OCRWorker._reader_gpu = self.gpu_enabled
+                    OCRWorker._reader_langs = list(ocr_langs)
+
+                # Pix2Text — re-initialise if device changed
+                if need_p2t and not self._cancelled:
+                    self._announce_model_stage(9, translator.t("loading.pix2text"))
+                    OCRWorker._p2t = self._load_pix2text(self.device_type)
+                    OCRWorker._p2t_device = self.device_type
+        finally:
+            self.models_ready.emit()
 
         return OCRWorker._reader, OCRWorker._p2t
+
+    def _announce_model_stage(self, pct: int, message: str) -> None:
+        self.progress.emit(pct, message)
+        self.models_loading.emit(message)
 
     @staticmethod
     def _load_pix2text(device: str):
         """
-        Load Pix2Text with a three-level fallback strategy.
+        Load Pix2Text, trying formula backends in the order chosen by
+        `_pix2text_attempts()` (ONNX Runtime provider aware), then the legacy
+        direct constructor as a last resort.
 
-        Level 1 — Default (ONNX runtime) which is much faster and uses onnxruntime-gpu if installed.
-        Level 2 — Force PyTorch backend if ONNX models are missing or runtime crashes.
-        Level 3 — Direct constructor as last resort.
+        DownloadCancelled is a BaseException, so it passes through the
+        `except Exception` fallbacks and aborts loading immediately.
         """
         from pix2text import Pix2Text
 
-        try:
-            # Attempt 1: Default config (prefers ONNX)
-            return Pix2Text.from_config(device=device)
-        except Exception as exc:
-            app_logger.warning("Pix2Text ONNX yüklenemedi, PyTorch'a geçiliyor: %s", exc)
+        for name, configs in _pix2text_attempts(device):
+            try:
+                app_logger.info("Loading Pix2Text (backend={}, device={})", name, device)
+                p2t = Pix2Text.from_config(total_configs=configs, device=device)
+                app_logger.info("Pix2Text loaded with backend {}", name)
+                return p2t
+            except Exception as exc:
+                app_logger.opt(exception=True).warning(
+                    "Pix2Text could not be loaded with backend {}: {}", name, exc
+                )
 
-        try:
-            # Attempt 2: Fallback to PyTorch backend
-            return Pix2Text.from_config(
-                total_configs={'formula': {'model_backend': 'pytorch'}},
-                device=device,
-            )
-        except Exception as exc:
-            app_logger.warning("Pix2Text PyTorch yüklenemedi, doğrudan başlatmaya geçiliyor: %s", exc)
-
-        # Attempt 3: Legacy direct instantiation
+        app_logger.warning("All Pix2Text configs failed; falling back to direct construction")
         return Pix2Text(device=device)
 
     # ------------------------------------------------------------------
@@ -672,3 +811,60 @@ class OCRWorker(QThread):
                 p.string = i_text
             section.append(p)
         return section
+
+
+# ---------------------------------------------------------------------------
+# Startup model preparation
+# ---------------------------------------------------------------------------
+
+class ModelPrepWorker(OCRWorker):
+    """
+    Loads (and on first run downloads) the OCR models right after the health
+    check, so the first conversion does not stall on a multi-GB download.
+
+    Reuses OCRWorker's model cache, `_get_models()` and its signals:
+        models_loading / download_progress / models_ready – as in OCRWorker
+        prepared – models are loaded and cached
+        error    – loading failed (status.cancel_sentinel when cancelled)
+
+    cancel() aborts a running download; a model already loading from disk
+    finishes first. The models are then loaded by the next conversion.
+    """
+
+    prepared = pyqtSignal()
+
+    def __init__(self, gpu_enabled: bool = False, device_type: str = "cpu") -> None:
+        QThread.__init__(self)
+        self.pdf_path = ""
+        self.output_path = ""
+        self.gpu_enabled = gpu_enabled
+        self.device_type = device_type
+        self._cancelled = False
+
+    def run(self) -> None:
+        missing = _check_dependencies()
+        if missing:
+            # The conversion reports missing libraries with a proper message.
+            app_logger.warning("Model preparation skipped, missing libraries: {}", missing)
+            self.error.emit(translator.t("errors.missing_libs", libs=", ".join(missing)))
+            return
+
+        app_logger.info(
+            "Preparing models at startup (gpu={}, device={})", self.gpu_enabled, self.device_type
+        )
+        try:
+            self._get_models()
+        except DownloadCancelled:
+            app_logger.info("Startup model download cancelled by the user")
+            self._emit_cancelled()
+            return
+        except Exception as exc:
+            app_logger.opt(exception=True).error("Startup model preparation failed: {}", exc)
+            self.error.emit(str(exc))
+            return
+
+        if self._cancelled:
+            self._emit_cancelled()
+        else:
+            app_logger.info("Models prepared at startup")
+            self.prepared.emit()

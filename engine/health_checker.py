@@ -30,7 +30,14 @@ def check_system_health() -> dict:
         vram_gb        (float)
         announcement   (str)  – localized status message
         recommendation (str)  – 'GPU' | 'CPU'
+        onnx           (dict) – detect_onnxruntime() output (available,
+                                version, providers, cuda, directml)
+
+    The ONNX Runtime info decides which Pix2Text backend the model
+    preparation tries first (see ocr_worker._pix2text_attempts).
     """
+    from engine.ocr_worker import detect_onnxruntime
+
     app_logger.info(translator.t("health.scanning"))
 
     result: dict = {
@@ -40,6 +47,7 @@ def check_system_health() -> dict:
         "vram_gb": 0.0,
         "announcement": translator.t("status.gpu_not_found"),
         "recommendation": "CPU",
+        "onnx": detect_onnxruntime(),
     }
 
     try:
@@ -70,6 +78,12 @@ def check_system_health() -> dict:
     except Exception:
         # CUDA query failed — continue with CPU
         pass
+
+    if result["gpu_available"] and result["onnx"]["available"] and not result["onnx"]["cuda"]:
+        app_logger.info(
+            "GPU found but ONNX Runtime has no CUDA provider; ONNX models will run on CPU "
+            "and Pix2Text formulas will prefer PyTorch on the GPU."
+        )
 
     app_logger.info(translator.t("health.result", announcement=result["announcement"]))
     return result

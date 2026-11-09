@@ -15,7 +15,7 @@ Import order matters:
 
 import sys
 
-import logger  # Activates the stdout/stderr pipeline immediately
+import logger  # Activates loguru sinks + the stdout/stderr pipeline immediately
 from utils.i18n import translator  # Initialise translations before the UI
 from PyQt6.QtWidgets import QApplication
 from ui.main_window import MainWindow
@@ -23,6 +23,8 @@ from engine.ocr_worker import OCRWorker
 
 
 def main() -> None:
+    logger.install_qt_message_handler()
+    logger.app_logger.info("Scanbridge starting (Python {})", sys.version.split()[0])
     app = QApplication(sys.argv)
     app.setApplicationName("Scanbridge")
 

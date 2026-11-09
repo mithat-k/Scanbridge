@@ -18,3 +18,4 @@ __pycache__/
 Thumbs.db
 graphify-out/
 logs/*.log
+.claude

@@ -15,7 +15,11 @@
     "cancelled": "Cancelled",
     "conversion_complete": "Conversion complete",
     "error": "Error: {message}",
-    "cancel_sentinel": "İptal edildi."
+    "cancel_sentinel": "İptal edildi.",
+    "models_preparing": "Preparing OCR models…",
+    "models_ready": "Ready. Models are loaded — select a PDF to convert.",
+    "models_prep_cancelled": "Model download cancelled. The models will be downloaded on the first conversion.",
+    "models_prep_failed": "Models could not be prepared: {message}. They will be retried on the first conversion."
   },
   "buttons": {
     "select_and_convert": "Select PDF & Convert",
@@ -84,5 +88,16 @@
     "ocr_started": "OCR Worker started. Target: {path}",
     "ocr_done": "OCR process completed successfully.",
     "ocr_error": "OCR process error: {error}"
+  },
+  "model_dialog": {
+    "title": "Preparing models",
+    "heading": "Preparing OCR models",
+    "hint": "On first use the models are downloaded once and cached; later conversions start immediately.",
+    "bar_label": "Model preparation progress",
+    "downloading": "{stage} — downloading model files…",
+    "download_known": "{file}: {done} / {total} MB ({percent}%)",
+    "download_unknown": "{file}: {done} MB downloaded",
+    "unnamed_file": "Model file",
+    "cancelling": "Cancelling…"
   }
 }
