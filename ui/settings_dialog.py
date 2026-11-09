@@ -6,9 +6,8 @@ Settings dialog — interface language selector + EasyOCR recognition language p
 Changes are applied live (interface language) or on the next conversion start
 (OCR languages) without requiring an application restart.
 
-EasyOCR language selection uses a QListWidget with Qt.ItemFlag.ItemIsUserCheckable
-items so the user can tick multiple languages. The widget is wrapped in a styled
-QFrame to match the rest of the dark UI.
+EasyOCR language selection uses two QComboBoxes: a mandatory primary language
+and an optional secondary language ("None" allowed).
 """
 
 from __future__ import annotations
@@ -17,8 +16,13 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout,
     QLabel, QComboBox, QPushButton, QFrame,
-    QSizePolicy,
 )
+
+try:
+    from PyQt6.QtGui import QAccessible, QAccessibleEvent
+    _HAS_QACCESSIBLE = True
+except ImportError:
+    _HAS_QACCESSIBLE = False
 
 from utils.i18n import translator
 from utils.settings_manager import (
@@ -29,22 +33,10 @@ from utils.settings_manager import (
 
 # ---------------------------------------------------------------------------
 # Ordered list of (easyocr_code, translation_key) pairs exposed in the UI.
-# Order matches _SUPPORTED_OCR_LANGUAGES in settings_manager.py.
+# Derived from _SUPPORTED_OCR_LANGUAGES so the two can never drift apart.
 # ---------------------------------------------------------------------------
 _OCR_LANG_ITEMS: list[tuple[str, str]] = [
-    ("tr",     "settings_dialog.ocr_lang_tr"),
-    ("en",     "settings_dialog.ocr_lang_en"),
-    ("de",     "settings_dialog.ocr_lang_de"),
-    ("fr",     "settings_dialog.ocr_lang_fr"),
-    ("es",     "settings_dialog.ocr_lang_es"),
-    ("it",     "settings_dialog.ocr_lang_it"),
-    ("pt",     "settings_dialog.ocr_lang_pt"),
-    ("ru",     "settings_dialog.ocr_lang_ru"),
-    ("ar",     "settings_dialog.ocr_lang_ar"),
-    ("zh_sim", "settings_dialog.ocr_lang_zh_sim"),
-    ("zh_tra", "settings_dialog.ocr_lang_zh_tra"),
-    ("ja",     "settings_dialog.ocr_lang_ja"),
-    ("ko",     "settings_dialog.ocr_lang_ko"),
+    (code, f"settings_dialog.ocr_lang_{code}") for code in _SUPPORTED_OCR_LANGUAGES
 ]
 
 
@@ -52,7 +44,7 @@ class SettingsDialog(QDialog):
     """
     Modal settings dialog with:
     - Interface language selector (QComboBox).
-    - EasyOCR recognition language picker (multi-select QListWidget).
+    - EasyOCR recognition language picker (primary + optional secondary QComboBox).
 
     The interface language change is applied immediately via the Translator.
     The OCR language change is saved to settings.json and used on the next
@@ -108,6 +100,7 @@ class SettingsDialog(QDialog):
         if idx >= 0:
             self._lang_combo.setCurrentIndex(idx)
 
+        self._lang_label.setBuddy(self._lang_combo)
         lang_row.addWidget(self._lang_label)
         lang_row.addWidget(self._lang_combo, stretch=1)
         root.addLayout(lang_row)
@@ -124,6 +117,7 @@ class SettingsDialog(QDialog):
         self._ocr_combo1.setObjectName("ocrCombo1")
         self._ocr_combo1.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self._ocr_combo1.setAccessibleName(translator.t("settings_dialog.ocr_lang_label") + " 1")
+        self._ocr_label.setBuddy(self._ocr_combo1)
 
         self._ocr_combo2 = QComboBox()
         self._ocr_combo2.setObjectName("ocrCombo2")
@@ -305,30 +299,75 @@ class SettingsDialog(QDialog):
         """
         # --- Interface language ---
         selected_lang = self._lang_combo.currentData()
-        translator.switch_language(selected_lang)
+        lang_changed = bool(selected_lang) and selected_lang != translator.current_language
+        if lang_changed:
+            translator.switch_language(selected_lang)
+            self._retranslate()
 
-        # Refresh this dialog's own texts to match the new language
-        self.setWindowTitle(translator.t("settings_dialog.title"))
-        self._lang_label.setText(translator.t("settings_dialog.language_label"))
-        self._ocr_label.setText(translator.t("settings_dialog.ocr_lang_label"))
+        # --- OCR languages ---
+        # No manual cache invalidation needed: OCRWorker._get_models() compares
+        # the saved list with the cached reader's languages and reloads only
+        # when they differ. (Resetting OCRWorker._reader here forced an
+        # expensive EasyOCR reload on every Save, even with no change, and
+        # raced with a conversion that might be running.)
+        ocr_langs = self._get_checked_ocr_languages()
+        ocr_changed = bool(ocr_langs) and ocr_langs != get_ocr_languages()
+        if ocr_changed:
+            set_ocr_languages(ocr_langs)
+
+        # --- Show notice (only for what actually changed) ---
+        notice_parts: list[str] = []
+        if lang_changed:
+            notice_parts.append(translator.t("settings_dialog.restart_notice"))
+        if ocr_changed:
+            notice_parts.append(translator.t("settings_dialog.ocr_lang_changed_notice"))
+
+        if not notice_parts:
+            # Nothing to save — just close the dialog.
+            self.accept()
+            return
+
+        self._show_notice("  ".join(notice_parts))
+
+    def _show_notice(self, message: str) -> None:
+        """Show the notice label and announce it to screen readers."""
+        self._notice_label.setText(message)
+        self._notice_label.setAccessibleName(message)
+        self._notice_label.setVisible(True)
+        if _HAS_QACCESSIBLE:
+            try:
+                QAccessible.updateAccessibility(
+                    QAccessibleEvent(self._notice_label, QAccessible.Event.Alert)
+                )
+            except Exception:
+                pass
+
+    def _retranslate(self) -> None:
+        """Refresh every translatable string in the dialog, including combo items."""
+        title = translator.t("settings_dialog.title")
+        self.setWindowTitle(title)
+        self.setAccessibleName(title)
+
+        lang_label = translator.t("settings_dialog.language_label")
+        self._lang_label.setText(lang_label)
+        self._lang_combo.setAccessibleName(lang_label)
+        for i in range(self._lang_combo.count()):
+            code = self._lang_combo.itemData(i)
+            self._lang_combo.setItemText(i, translator.t(f"settings_dialog.language_{code}"))
+
+        ocr_label = translator.t("settings_dialog.ocr_lang_label")
+        self._ocr_label.setText(ocr_label)
+        self._ocr_combo1.setAccessibleName(ocr_label + " 1")
+        self._ocr_combo2.setAccessibleName(ocr_label + " 2")
+        for combo in (self._ocr_combo1, self._ocr_combo2):
+            for i in range(combo.count()):
+                code = combo.itemData(i)
+                key = (
+                    f"settings_dialog.ocr_lang_{code}" if code
+                    else "settings_dialog.ocr_lang_none"
+                )
+                combo.setItemText(i, translator.t(key))
+
         self._ocr_hint.setText(translator.t("settings_dialog.ocr_lang_hint"))
         self._save_btn.setText(translator.t("settings_dialog.save_button"))
         self._cancel_btn.setText(translator.t("settings_dialog.cancel_button"))
-
-        # --- OCR languages ---
-        ocr_langs = self._get_checked_ocr_languages()
-        if ocr_langs:
-            set_ocr_languages(ocr_langs)
-            # Invalidate the cached EasyOCR reader so it reloads with the new
-            # language list on the next conversion.
-            from engine.ocr_worker import OCRWorker
-            OCRWorker._reader = None
-            OCRWorker._reader_langs = None
-
-        # --- Show notice ---
-        notice_parts: list[str] = [translator.t("settings_dialog.restart_notice")]
-        if ocr_langs:
-            notice_parts.append(translator.t("settings_dialog.ocr_lang_changed_notice"))
-
-        self._notice_label.setText("  ".join(notice_parts))
-        self._notice_label.setVisible(True)
