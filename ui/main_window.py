@@ -69,6 +69,14 @@ def _announce(widget: QLabel, message: str, *, event_type=None) -> None:
             pass
 
 
+def _alert(widget: QLabel, message: str) -> None:
+    """Announce *message* as an Alert (falls back to NameChanged semantics)."""
+    if _HAS_QACCESSIBLE:
+        _announce(widget, message, event_type=QAccessible.Event.Alert)
+    else:
+        _announce(widget, message)
+
+
 # ---------------------------------------------------------------------------
 # Main window
 # ---------------------------------------------------------------------------
@@ -105,6 +113,11 @@ class MainWindow(QWidget):
         self.device_type: str = "cpu"
         self._converting: bool = False  # Guard against double-conversion
         self._first_show: bool = True   # Tracks the very first showEvent call
+        self._health_done: bool = False  # select_btn stays disabled until True
+        # Translation key (+ kwargs) of the current status text, so the label
+        # can be re-rendered in the new language on a live language switch.
+        self._status_key: str | None = "status.starting"
+        self._status_kwargs: dict = {}
 
         self._build_ui()
         self._run_health_check()
@@ -449,20 +462,34 @@ class MainWindow(QWidget):
 
         self.progress_bar.setAccessibleName(translator.t("progress.bar_label"))
 
-        # Only update the status label if it isn't mid-conversion
-        # (to avoid clobbering a live progress message)
-        if not self._converting:
-            current_status = self.status_label.text()
-            # Refresh to the generic "starting" placeholder only when idle
-            if current_status in (
-                translator.t("status.starting"),
-                translator.t("status.scanning_system"),
-            ):
-                self.status_label.setText(translator.t("status.starting"))
+        # Re-render the status label from its stored translation key.
+        # (The old code compared the label text against the *new* language's
+        # strings, so it never matched and the label was never retranslated.)
+        # During a conversion the label shows worker-generated progress text,
+        # which is replaced by the next progress update anyway.
+        if not self._converting and self._status_key is not None:
+            _announce(
+                self.status_label,
+                translator.t(self._status_key, **self._status_kwargs),
+            )
 
     # ------------------------------------------------------------------
     # Settings
     # ------------------------------------------------------------------
+
+    def _set_status(self, key: str, **kwargs) -> None:
+        """Show (and announce) a translated status; remember its key for retranslation."""
+        self._status_key = key
+        self._status_kwargs = kwargs
+        _alert(self.status_label, translator.t(key, **kwargs))
+
+    @staticmethod
+    def _key_for_text(text: str, candidates: tuple[str, ...]) -> str | None:
+        """Return the translation key whose current text equals *text*, if any."""
+        for key in candidates:
+            if translator.t(key) == text:
+                return key
+        return None
 
     def _open_settings(self) -> None:
         """Open the Settings dialog."""
@@ -483,21 +510,23 @@ class MainWindow(QWidget):
 
     def _on_health_loading(self, message: str) -> None:
         """Display the loading message and announce it to screen readers."""
-        if _HAS_QACCESSIBLE:
-            _announce(self.status_label, message, event_type=QAccessible.Event.Alert)
-        else:
-            _announce(self.status_label, message)
+        self._status_key = self._key_for_text(message, ("status.scanning_system",))
+        self._status_kwargs = {}
+        _alert(self.status_label, message)
 
     def _on_health_done(self, health: dict) -> None:
         """Update the UI after the hardware check completes."""
         self.gpu_enabled = health["gpu_available"]
         self.device_type = health["device_type"]
+        self._health_done = True
 
         announcement = health["announcement"]
-        if _HAS_QACCESSIBLE:
-            _announce(self.status_label, announcement, event_type=QAccessible.Event.Alert)
-        else:
-            _announce(self.status_label, announcement)
+        self._status_key = self._key_for_text(
+            announcement,
+            ("status.gpu_found", "status.gpu_not_found", "status.pytorch_failed"),
+        )
+        self._status_kwargs = {}
+        _alert(self.status_label, announcement)
 
         # Hardware badge
         badge_text = health["recommendation"]
@@ -509,9 +538,11 @@ class MainWindow(QWidget):
         self.hw_badge.setVisible(True)
 
         # Enable primary action and move focus to it so the screen reader
-        # announces that the app is ready to use.
+        # announces that the app is ready to use — but don't steal focus while
+        # a modal dialog (e.g. Settings) is open on top of the main window.
         self.select_btn.setEnabled(True)
-        self.select_btn.setFocus(Qt.FocusReason.OtherFocusReason)
+        if self.isActiveWindow():
+            self.select_btn.setFocus(Qt.FocusReason.OtherFocusReason)
 
     # ------------------------------------------------------------------
     # Conversion flow
@@ -531,6 +562,12 @@ class MainWindow(QWidget):
             self._start_conversion(file_path)
 
     def _start_conversion(self, file_path: str) -> None:
+        # A previously cancelled worker may still be finishing its current
+        # page. Running a second worker in parallel would share the cached
+        # class-level models across threads, so refuse until it has stopped.
+        if self.ocr_worker is not None and self.ocr_worker.isRunning():
+            return
+
         self._converting = True
         self.select_btn.setEnabled(False)
         self.cancel_btn.setVisible(True)
@@ -538,23 +575,13 @@ class MainWindow(QWidget):
         self.progress_bar.setVisible(True)
 
         file_name = os.path.basename(file_path)
-        msg = translator.t("status.processing", filename=file_name)
-        if _HAS_QACCESSIBLE:
-            _announce(self.status_label, msg, event_type=QAccessible.Event.Alert)
-        else:
-            _announce(self.status_label, msg)
+        self._set_status("status.processing", filename=file_name)
 
-        # Disconnect and stop any previous worker
+        # Release the previous (already stopped) worker
         if self.ocr_worker is not None:
-            try:
-                self.ocr_worker.progress.disconnect()
-                self.ocr_worker.result_ready.disconnect()
-                self.ocr_worker.error.disconnect()
-            except RuntimeError:
-                pass  # Already disconnected — safe to ignore
-            if self.ocr_worker.isRunning():
-                self.ocr_worker.cancel()
-                self.ocr_worker.wait(2000)
+            self._disconnect_worker(self.ocr_worker)
+            self.ocr_worker.deleteLater()
+            self.ocr_worker = None
 
         self.ocr_worker = self.engine_worker_class(
             file_path,
@@ -564,52 +591,83 @@ class MainWindow(QWidget):
         self.ocr_worker.progress.connect(self._on_progress)
         self.ocr_worker.result_ready.connect(self._on_finished)
         self.ocr_worker.error.connect(self._on_error)
+        # QThread's built-in lifecycle signal: re-enable the primary button
+        # only once the thread has really stopped (matters after a cancel).
+        self.ocr_worker.finished.connect(self._on_worker_thread_finished)
         self.ocr_worker.start()
 
+    @staticmethod
+    def _disconnect_worker(worker) -> None:
+        """Detach all UI slots from *worker* so late signals cannot touch the UI."""
+        for signal in (worker.progress, worker.result_ready, worker.error):
+            try:
+                signal.disconnect()
+            except (RuntimeError, TypeError):
+                pass  # Already disconnected — safe to ignore
+
+    def _on_worker_thread_finished(self) -> None:
+        """The OCR thread has fully stopped; allow a new conversion if idle."""
+        if not self._converting and self._health_done:
+            self.select_btn.setEnabled(True)
+
     def _on_progress(self, value: int, message: str) -> None:
+        if not self._converting:
+            return  # Late signal after cancel/finish — ignore
         self.progress_bar.setValue(value)
         if message:
-            self.status_label.setText(message)
-            self.status_label.setAccessibleName(message)
+            # Progress text arrives pre-translated from the worker.
+            self._status_key = None
+            self._status_kwargs = {}
+            _announce(self.status_label, message)
 
     def _on_cancel_clicked(self) -> None:
         """Cancel the active OCR worker and reset the UI."""
-        if self.ocr_worker is not None and self.ocr_worker.isRunning():
-            self.ocr_worker.cancel()
+        if not self._converting:
+            return
+        worker = self.ocr_worker
+        if worker is not None:
+            # Detach first: the worker only checks the cancel flag between
+            # pages, so it may still emit progress for the current page,
+            # which would overwrite the "Cancelled" status.
+            self._disconnect_worker(worker)
+            worker.cancel()
         self._reset_ui_after_conversion()
-        msg = translator.t("status.cancelled")
-        if _HAS_QACCESSIBLE:
-            _announce(self.status_label, msg, event_type=QAccessible.Event.Alert)
-        else:
-            _announce(self.status_label, msg)
+        self.progress_bar.setVisible(False)
+        self._set_status("status.cancelled")
 
     def _reset_ui_after_conversion(self) -> None:
         """Restore the UI to its idle state after conversion ends or is cancelled."""
         self._converting = False
-        self.select_btn.setEnabled(True)
+        # If the cancel button had focus, move focus somewhere sensible before
+        # hiding it, otherwise keyboard / screen-reader focus is lost.
+        cancel_had_focus = self.cancel_btn.hasFocus()
+        # Keep select_btn disabled while the worker thread is still running
+        # (e.g. finishing its current page after a cancel); it is re-enabled
+        # by _on_worker_thread_finished in that case.
+        worker_running = self.ocr_worker is not None and self.ocr_worker.isRunning()
+        self.select_btn.setEnabled(self._health_done and not worker_running)
         self.cancel_btn.setVisible(False)
+        if cancel_had_focus:
+            target = self.select_btn if self.select_btn.isEnabled() else self._settings_btn
+            target.setFocus(Qt.FocusReason.OtherFocusReason)
 
     def _on_finished(self, output_path: str) -> None:
+        if not self._converting:
+            return
         self._reset_ui_after_conversion()
         self.progress_bar.setValue(100)
-        msg = translator.t("status.conversion_complete")
-        if _HAS_QACCESSIBLE:
-            _announce(self.status_label, msg, event_type=QAccessible.Event.Alert)
-        else:
-            _announce(self.status_label, msg)
+        self._set_status("status.conversion_complete")
 
     def _on_error(self, error_message: str) -> None:
         # The cancel sentinel comes from the worker's own cancel() call;
-        # _on_cancel_clicked already handled the UI update.
-        if error_message == translator.t("status.cancel_sentinel"):
+        # _on_cancel_clicked already handled the UI update (and normally
+        # disconnected this slot before the sentinel arrives).
+        if not self._converting or error_message == translator.t("status.cancel_sentinel"):
             return
         self._reset_ui_after_conversion()
         self.progress_bar.setValue(0)
-        msg = translator.t("status.error", message=error_message)
-        if _HAS_QACCESSIBLE:
-            _announce(self.status_label, msg, event_type=QAccessible.Event.Alert)
-        else:
-            _announce(self.status_label, msg)
+        self.progress_bar.setVisible(False)
+        self._set_status("status.error", message=error_message)
 
     # ------------------------------------------------------------------
     # Window close
@@ -617,25 +675,36 @@ class MainWindow(QWidget):
 
     def closeEvent(self, event) -> None:
         """Gracefully stop all background threads before closing."""
-        # OCR worker
+        try:
+            translator.language_changed.disconnect(self._retranslate_ui)
+        except (RuntimeError, TypeError):
+            pass
+
+        # Hide right away so the user doesn't see a frozen window while the
+        # background threads wind down.
+        self.hide()
+
+        # OCR worker — the cancel flag is only checked between pages, so a
+        # timed wait could expire and the running QThread would then be
+        # destroyed ("QThread: Destroyed while thread is still running" →
+        # hard crash). Wait until it has really stopped.
         if self.ocr_worker is not None and self.ocr_worker.isRunning():
+            self._disconnect_worker(self.ocr_worker)
             try:
-                self.ocr_worker.progress.disconnect()
-                self.ocr_worker.result_ready.disconnect()
-                self.ocr_worker.error.disconnect()
-            except RuntimeError:
+                self.ocr_worker.finished.disconnect()
+            except (RuntimeError, TypeError):
                 pass
             self.ocr_worker.cancel()
-            self.ocr_worker.wait(3000)
+            self.ocr_worker.wait()
 
-        # Health checker worker
+        # Health checker worker — run() has no event loop, so quit() is a
+        # no-op; just wait for the (bounded) hardware probe to complete.
         if hasattr(self, "_health_worker") and self._health_worker.isRunning():
-            try:
-                self._health_worker.loading.disconnect()
-                self._health_worker.result_ready.disconnect()
-            except RuntimeError:
-                pass
-            self._health_worker.quit()
-            self._health_worker.wait(2000)
+            for signal in (self._health_worker.loading, self._health_worker.result_ready):
+                try:
+                    signal.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+            self._health_worker.wait()
 
         event.accept()
